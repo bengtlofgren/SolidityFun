@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
     // Description
 // The idea is to create a game where a network is initially initialized as the empty network with each player being a node. Links can be formed in the network by agreement. 
 // These links are always undirected. The formation of links are done bilaterally, whilst the severing of links are done automatically when nodes are deleted.
@@ -36,10 +37,11 @@ pragma solidity >0.4.23 <0.7.0;
 contract TrustGame {
     struct Player {
         uint32 bodyCount;
-        address linksTo[]; // This is who the player has direct links to
+        address[] linksTo; // This is who the player has direct links to
+        uint group;
         bool alive;
         address requestCartel;
-        bool public hasRegistered;
+        bool hasRegistered;
 
     }
 
@@ -49,15 +51,17 @@ contract TrustGame {
     uint public fee;
     uint public totalPot;
     uint public effectivePlayers;
+    uint public groupCount;
+    uint public activeGroupCount;
 
     mapping(address => Player) public players;
-    mapping(address victim => address) public killList;
-    mapping(uint group => address[]) public groupList;
+    mapping(address => address) public killList;
+    mapping(uint => address[]) public groupList;
 
 
     mapping(address => uint) public withdrawableFunds;
 
-    event EvaluateGame(uint effectivePlayers, uint totalPot);
+    event GameEvaluated(uint effectivePlayers, uint totalPot);
     event GameEnded(uint time);
 
     modifier onlyBefore(uint _time) { require(now < _time); _; }
@@ -65,41 +69,40 @@ contract TrustGame {
 
     constructor(
         uint _gameTime,
-        uint _revealTime,
         uint _fee
        
     ) public {
         gameEnd = now + _gameTime;
-        revealEnd = gameEnd + _revealTime;
         fee = _fee;
         totalPot = 0;
         groupCount = 0;
     }
 
     
-    function enterGame(bytes32 _secretHash)
+    function enterGame()
         public
         payable
         onlyBefore(gameEnd)
     {
         require(msg.value >= fee, "Your payment did not meet the fee requirement");
         require(msg.value < 2*fee, "Seems like you are paying more than twice the fee, this is to help you avoid overspending");
-        require(msg.value += totalPot < 10 ** 50, "the pot size is getting dangerously large, no more players allowed");
+        require(msg.value + totalPot < 10 ** 50, "the pot size is getting dangerously large, no more players allowed");
         require(!players[msg.sender].hasRegistered, "You can only enter the game once");
-        Player _player = players[msg.sender];
+        Player storage _player = players[msg.sender];
             _player.hasRegistered = true;
             // increment the group number and assign this to the player
             groupCount++;
+            activeGroupCount ++;
             _player.group = groupCount;
             _player.bodyCount =  0;
             _player.alive = true;
 
         //Add player to a group involving only himself
-        groupList(_player.group).push(msg.sender)
+        groupList[_player.group].push(msg.sender);
         
         
         // Iniitalize killList so that player can only kill himself
-        killList(msg.sender) = msg.sender 
+        killList[msg.sender] = msg.sender;
 
 
         totalPot += msg.value;
@@ -110,59 +113,62 @@ contract TrustGame {
         public
         onlyBefore(gameEnd)
     {
-        require(players(msg.sender).alive == true, "No kills from the grave I'm afraid");
-        Player _killer = players(msg.sender);
-        address _addressToKill = killList(msg.sender);
-        Player _playerToKill = players(_addressToKill);
+        require(players[msg.sender].alive == true, "No kills from the grave I'm afraid");
+        Player storage _killer = players[msg.sender];
+        address _addressToKill = killList[msg.sender];
+        Player storage _playerToKill = players[_addressToKill];
         assert(_playerToKill.alive == true);
-        require(_playerToKill.bodyCount >= _killer.bodyCount, "You can only kill someone with a killcount greater than or equal to your own")
+        require(_playerToKill.bodyCount >= _killer.bodyCount, "You can only kill someone with a killcount greater than or equal to your own");
         _playerToKill.alive = false;
         _killer.bodyCount += 1;
 
         // The killer takes control over the victim's victim.
-        killList(msg.sender) = killList(_addressToKill)
+        killList[msg.sender] = killList[_addressToKill];
 
 
         //TODO: All ties must be severed and new groups created where needed
         
         //The victim's victim now needs a new group, and the whole group needs to be updated recursively
         breakLink(_addressToKill, msg.sender);
-        }
     }
+
 
     function breakLink(address _deadLink, address _killer) internal {
         assert(groupList[groupCount+1].length == 0);
         // Note that this could include the killer as well. Make sure the killer isn't removed from his own group
-        address[] linksToBreak = players[_deadlink].linksTo;
-        for (uint i = 0; i < linksToBreak; i++) {
+        address[] memory linksToBreak = players[_deadLink].linksTo;
+        for (uint i = 0; i < linksToBreak.length; i++) {
             if (linksToBreak[i] == _killer){
-                continue
+                continue;
             }
             else {
                 // Assign to new group
                 groupCount ++;
-                changeGroup(linksToBreak[i], groupCount, _deadlink);
+                changeGroup(linksToBreak[i], groupCount, _deadLink);
             }
         }
-        delete players[_deadlink].linksTo;
+        delete players[_deadLink].linksTo;
     
     }
     
     function changeGroup(address fromAddress, uint toGroup, address deadLink) internal {
         
-        Player changer = player[fromAddress];
+        Player storage changer = players[fromAddress];
+        
+        uint from_group = changer.group;
+        
         changer.group = toGroup;
 
         groupList[toGroup].push(fromAddress);
 
-        address[] linksToChange = changer.linksTo;
+        address[] memory linksToChange = changer.linksTo;
 
         for (uint i = 0; i < linksToChange.length; i++) {
             if (linksToChange[i] == deadLink) {
                 delete linksToChange[i];
             }
             else if (players[linksToChange[i]].group == toGroup){
-                continue
+                continue;
             }
             else {
                 changeGroup(linksToChange[i], toGroup, deadLink);
@@ -170,18 +176,18 @@ contract TrustGame {
         }
 
         delete groupList[from_group];
-        groupCount --;
+        activeGroupCount --;
     }
 
     function requestCartel(address _receiverAddress) public {
         // Check so that receiver is an address
         // Also change naming of receiver
-        Player receiver = players[_receiverAddress];
-        Player sender = players[msg.sender];
+        Player storage receiver = players[_receiverAddress];
+        Player storage sender = players[msg.sender];
         require(receiver.alive, "You can only request a cartel with an alive player");
         sender.requestCartel = _receiverAddress;
         if (receiver.requestCartel == msg.sender){
-            require(sender.group != receiver.group, "The two of you are already in the same group, cannot cartel further")  
+            require(sender.group != receiver.group, "The two of you are already in the same group, cannot cartel further"); 
             if (receiver.group < sender.group) {
                 // Sending deadLink = address(0) since nobody has died in a cartel formation, so no need to delete links
                 changeGroup(msg.sender, receiver.group, address(0));
@@ -191,13 +197,13 @@ contract TrustGame {
             }
             
             // Switch who kills who
-            killList[msg.sender] = killList(_receiverAddress);
-            killList[_receiverAddress] = killList(msg.sender);
+            killList[msg.sender] = killList[_receiverAddress];
+            killList[_receiverAddress] = killList[msg.sender];
             
 
             //reset requestCartel
-            players[msg.sender].requestCartel = 0;
-            players[_receiver].requestCartel = 0;
+            players[msg.sender].requestCartel = address(0);
+            players[_receiverAddress].requestCartel = address(0);
         }
     }
     
@@ -206,6 +212,7 @@ contract TrustGame {
     function evaluate()
         internal
         onlyAfter(gameEnd)
+        returns(bool)
     {
         // Is this safe enough?
         assert(ended);
@@ -215,14 +222,14 @@ contract TrustGame {
         for (uint i = 0; i < groupCount + 1; i++){
             effectivePlayers += groupList[i].length;
         }
-        emit GameEvaluated(effectivePlayers);
+        emit GameEvaluated(effectivePlayers, totalPot);
 
-        return true
+        return true;
     }
 
     /// Withdraw a bid that was overbid.
     function withdraw() public {
-        Player _finisher = playerList[msg.sender];
+        Player storage _finisher = players[msg.sender];
         require(effectivePlayers != 0, "the evaluate function has not been called");
         require(_finisher.alive == true, "You either died in the game or have already withdrawn. There is nothing for you to withdraw" );
         uint weight = groupList[_finisher.group].length;
@@ -237,9 +244,9 @@ contract TrustGame {
     }
 
     /// End the game and allow it to be evaluated
-    function gameEnd()
+    function endGame()
         public
-        onlyAfter(GameEnded)
+        onlyAfter(gameEnd)
     {
         require(!ended);
         emit GameEnded(now);
