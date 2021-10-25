@@ -1,72 +1,65 @@
-  // Pseudocode
+    // Description
+// The idea is to create a game where a network is initially initialized as the empty network with each player being a node. Links can be formed in the network by agreement. 
+// These links are always undirected. The formation of links are done bilaterally, whilst the severing of links are done automatically when nodes are deleted.
+// A node can be deleted from the graph by the discretion of other nodes in the game. Each node is allowed to delete exactly one node from the game at any time, as long as it follows the rules of the game.
+// The mapping of nodes to the nodes they can delete is referred to as the "kill list" and is always 1-1. When a node is deleted, the node that maps from the deleted node is now mapped from the "killer"'s node.
+// If a formation of links is agreed by two parties, and the rules of the game are not violated, the nodes swap kill list mappings.
+  
+// The rules of the game dictate that:
+    // No node is allowed to delete a node that has deleted less nodes than what the "killer" has. 
+    // No node is allowed to kill once the game has ended.
+    // All networks must be acyclical.
 
-// Should a public key be available for encryption where the private key is revealed at the end of the game?
+// The nodes that remain after the game has completed are rewarded proportional to the size of their clique (reffered to as group).
 
-// 1. Participate with fee, hash of secret message using contract public key -- 
-//looks like this does not work so instead just use keccak256
+    // Pseudocode
+// 1. Participate with fee
+// 2. The fees are all collected and put into total prize pot.
 
-// 2. The fees are all collected and put into total prize pot. In order to release this pot, 
-// the unlockWithdraw function must be called, with the correct password. The withdraw function will allow all 
-// remaining participants to withdraw their respective amounts.
+// 3. Each player's killList mapping is initialized to herself. Each player is given a kill count- initialized at 0.
 
-// Each user is given a kill count- initialized at 0, and addresses are initially mapped to the hash of their own password.
-
-// 3. The withdraw password is a function of the players remaining. Perhaps something like submitting a number 
-// such that when sent through ECDSA produces a public key with consecutive number of zeros. Or could just hardcode it? 
-// Could allow the withdrawer to set a parameter that affects distribution of funds as well?
-
-// 4. Kill function: allow any player to be killed if their password is revealed. Player i can only kill player j if 
-        // player[i].killcount <= player[j].killcount
-// If the password does not correspond to a hash, the killer dies -- but why would a killer ever submit an incorrect hash? 
-// Can't they find it in the blockchain? - Yes
-//      Everybody has a kill count. This becomes relevant later. 
-
-// 5. Merge function, in order to merge, players can bilaterally agree to have their secret message addresses swapped.
-// They now have the capability of killing each other. However, the weight on each node's withdrawal
-// is determined by the length of their network. I should work out the math so that it is profitable 
-// for any one person to cut a link, but that the whole network is always more profitable than a single node for everyone.
-
-// I.e u(g-1|n-1)>u(g|n) > u(1|n-1)
-
+// 4. Kill function: allow any node i to kill node j as long as node i maps to node j in the killList.
+        // Check player[i].killcount <= player[j].killcount
 // When someone dies
     // if address points to themselves, do nothing
     // if their address points to someone else, the password is now linked to that account.
-    
-// How do we avoid people making multiple accounts? :/// Make bigger networks?
+
+// 5. Cartel function: in order to form links, players can bilaterally agree to have their killList mappings swapped.
+
+// 6. The reward calculation should be such that it is more profitable to form a link than to be a single player, but also that killing is profitable as long as it does not decrease
+// the group size by more than 1. 
+// I.e u(g-1|n-1)>u(g|n) > u(1|n-1)
+
 
 pragma solidity >0.4.23 <0.7.0;
 
 contract TrustGame {
     struct Player {
         uint32 bodyCount;
-        bytes32 secretHash[];
+        address linksTo[]; // This is who the player has direct links to
         bool alive;
         address requestCartel;
+        bool public hasRegistered;
+
     }
 
     address payable public beneficiary;
     uint public gameEnd;
-    uint public revealEnd;
     bool public ended;
     uint public fee;
     uint public totalPot;
-    uint public playerCount;
+    uint public effectivePlayers;
 
     mapping(address => Player) public players;
-    mapping(bytes32 secretHash => address) public killList;
+    mapping(address victim => address) public killList;
+    mapping(uint group => address[]) public groupList;
 
-    // address public highestBidder;
-    // uint public highestBid;
 
-    // Allowed withdrawals of previous bids
-    mapping(address => uint) pendingReturns;
+    mapping(address => uint) public withdrawableFunds;
 
-    event AuctionEnded(address winner, uint highestBid);
+    event EvaluateGame(uint effectivePlayers, uint totalPot);
+    event GameEnded(uint time);
 
-    /// Modifiers are a convenient way to validate inputs to
-    /// functions. `onlyBefore` is applied to `bid` below:
-    /// The new function body is the modifier's body where
-    /// `_` is replaced by the old function body.
     modifier onlyBefore(uint _time) { require(now < _time); _; }
     modifier onlyAfter(uint _time) { require(now > _time); _; }
 
@@ -80,7 +73,7 @@ contract TrustGame {
         revealEnd = gameEnd + _revealTime;
         fee = _fee;
         totalPot = 0;
-        playerCount = 0;
+        groupCount = 0;
     }
 
     
@@ -92,166 +85,166 @@ contract TrustGame {
         require(msg.value >= fee, "Your payment did not meet the fee requirement");
         require(msg.value < 2*fee, "Seems like you are paying more than twice the fee, this is to help you avoid overspending");
         require(msg.value += totalPot < 10 ** 50, "the pot size is getting dangerously large, no more players allowed");
-        require(players[msg.sender].secretHash != 0, "You can only enter the game once");
-        var player = players[msg.sender];
-            player.secretHash = _secret;
-            player.bodyCount =  0;
-            player.alive = true;
+        require(!players[msg.sender].hasRegistered, "You can only enter the game once");
+        Player _player = players[msg.sender];
+            _player.hasRegistered = true;
+            // increment the group number and assign this to the player
+            groupCount++;
+            _player.group = groupCount;
+            _player.bodyCount =  0;
+            _player.alive = true;
+
+        //Add player to a group involving only himself
+        groupList(_player.group).push(msg.sender)
+        
         
         // Iniitalize killList so that player can only kill himself
-        killList(_secret) = msg.sender
+        killList(msg.sender) = msg.sender 
+
+
         totalPot += msg.value;
         
     }
     
-    function kill(bytes32 _secret)
+    function kill()
         public
         onlyBefore(gameEnd)
     {
         require(players(msg.sender).alive == true, "No kills from the grave I'm afraid");
         Player _killer = players(msg.sender);
-        bytes32 _secretHash = keccak256(abi.encode(_secret));
-        address _addressToKill = killList(_secretHash);
+        address _addressToKill = killList(msg.sender);
         Player _playerToKill = players(_addressToKill);
-        if (_playerToKill.alive = true && _playerToKill.bodyCount >= _killer.bodyCount) {
-            _playerToKill.alive = false;
-            _killer.bodyCount += 1;
+        assert(_playerToKill.alive == true);
+        require(_playerToKill.bodyCount >= _killer.bodyCount, "You can only kill someone with a killcount greater than or equal to your own")
+        _playerToKill.alive = false;
+        _killer.bodyCount += 1;
+
+        // The killer takes control over the victim's victim.
+        killList(msg.sender) = killList(_addressToKill)
+
+
+        //TODO: All ties must be severed and new groups created where needed
+        
+        //The victim's victim now needs a new group, and the whole group needs to be updated recursively
+        breakLink(_addressToKill, msg.sender);
         }
     }
-    
-    function requestCartel(address _receiver) public {
-        // Check so that receiver is an address 
-        require(players[_receiver].alive, "You can only request a cartel with an alive player")
-        players[msg.sender].requestCartel = _receiver;
-        if (players[_receiver].requestCartel == msg.sender){
-            bytes32 senderHash = players[msg.sender].secretHash[players[msg.sender].secretHash.length - 1]
-            bytes32 receiverHash = players[_receiver].secretHash[players[_receiver].secretHash.length - 1]
-            
-            // Prevent cycles
-            // TODO:improve efficiency here, no need to loop through all of i twice
-            uint minLength = min(players[msg.sender].secretHash.length, players[_receiver].secretHash.length)
-            // uint maxLength = max(players[msg.sender].secretHash.length, players[_receiver].secretHash.length)
-            
-            for (uint i = 0; i < minLength; i++) {
-                require(receiverHash != players[msg.sender].secretHash[i], "this switch would create a loop, not allowed")
-                require(senderHash != players[_receiver].secretHash[i], "this switch would create a loop, not allowed")
+
+    function breakLink(address _deadLink, address _killer) internal {
+        assert(groupList[groupCount+1].length == 0);
+        // Note that this could include the killer as well. Make sure the killer isn't removed from his own group
+        address[] linksToBreak = players[_deadlink].linksTo;
+        for (uint i = 0; i < linksToBreak; i++) {
+            if (linksToBreak[i] == _killer){
+                continue
             }
-            if (players[msg.sender].secretHash.length > players[_receiver].secretHash.length){
-                for (uint i = minLength - 1; i < players[msg.sender].secretHash.length; i++) {
-                    require(receiverHash != players[msg.sender].secretHash[i], "this switch would create a loop, not allowed")
-                }
             else {
-                for (uint i = minLength - 1; i < players[_receiver].secretHash.length; i++) {
-                    require(receiverHash != players[_receiver].secretHash[i], "this switch would create a loop, not allowed")
-                }
+                // Assign to new group
+                groupCount ++;
+                changeGroup(linksToBreak[i], groupCount, _deadlink);
+            }
+        }
+        delete players[_deadlink].linksTo;
+    
+    }
+    
+    function changeGroup(address fromAddress, uint toGroup, address deadLink) internal {
+        
+        Player changer = player[fromAddress];
+        changer.group = toGroup;
+
+        groupList[toGroup].push(fromAddress);
+
+        address[] linksToChange = changer.linksTo;
+
+        for (uint i = 0; i < linksToChange.length; i++) {
+            if (linksToChange[i] == deadLink) {
+                delete linksToChange[i];
+            }
+            else if (players[linksToChange[i]].group == toGroup){
+                continue
+            }
+            else {
+                changeGroup(linksToChange[i], toGroup, deadLink);
+            }
+        }
+
+        delete groupList[from_group];
+        groupCount --;
+    }
+
+    function requestCartel(address _receiverAddress) public {
+        // Check so that receiver is an address
+        // Also change naming of receiver
+        Player receiver = players[_receiverAddress];
+        Player sender = players[msg.sender];
+        require(receiver.alive, "You can only request a cartel with an alive player");
+        sender.requestCartel = _receiverAddress;
+        if (receiver.requestCartel == msg.sender){
+            require(sender.group != receiver.group, "The two of you are already in the same group, cannot cartel further")  
+            if (receiver.group < sender.group) {
+                // Sending deadLink = address(0) since nobody has died in a cartel formation, so no need to delete links
+                changeGroup(msg.sender, receiver.group, address(0));
+            }
+            else {
+                changeGroup(_receiverAddress, sender.group, address(0));
             }
             
             // Switch who kills who
-            killList[senderHash] = players[_receiver]
-            killList[receiverHash] = players[msg.sender]
+            killList[msg.sender] = killList(_receiverAddress);
+            killList[_receiverAddress] = killList(msg.sender);
             
-            // Add the vulnerable secret hash to the end of the stack for each player
-            players[msg.sender].secretHash.push(receiverHash)
-            players[_receiver].secretHash.push(senderHash)
-            
+
             //reset requestCartel
             players[msg.sender].requestCartel = 0;
             players[_receiver].requestCartel = 0;
         }
     }
     
-    function max(uint a, uint b) internal {
-        if (b > a) {
-            return b
-        }
-        return a
-    }
-    function min(uint a, uint b) internal {
-        if (b > a) {
-            return a
-        }
-        return b
-    }
-    /// Reveal your blinded bids. You will get a refund for all
-    /// correctly blinded invalid bids and for all bids except for
-    /// the totally highest.
-    function reveal(
-        uint[] memory _values,
-        bool[] memory _fake,
-        bytes32[] memory _secret
-    )
-        public
-        onlyAfter(biddingEnd)
-        onlyBefore(revealEnd)
+    /// This evaluates the payouts and allows it to be withdrawn from each of the winning players.
+    //TODO: improve such that it is done automatically and does not need to be called by someone?
+    function evaluate()
+        internal
+        onlyAfter(gameEnd)
     {
-        uint length = bids[msg.sender].length;
-        require(_values.length == length);
-        require(_fake.length == length);
-        require(_secret.length == length);
+        // Is this safe enough?
+        assert(ended);
+        assert(effectivePlayers == 0);      
+          
+        // We need to evaluate all the weights and which 
+        for (uint i = 0; i < groupCount + 1; i++){
+            effectivePlayers += groupList[i].length;
+        }
+        emit GameEvaluated(effectivePlayers);
 
-        uint refund;
-        for (uint i = 0; i < length; i++) {
-            Bid storage bidToCheck = bids[msg.sender][i];
-            (uint value, bool fake, bytes32 secret) =
-                    (_values[i], _fake[i], _secret[i]);
-            if (bidToCheck.blindedBid != keccak256(abi.encodePacked(value, fake, secret))) {
-                // Bid was not actually revealed.
-                // Do not refund deposit.
-                continue;
-            }
-            refund += bidToCheck.deposit;
-            if (!fake && bidToCheck.deposit >= value) {
-                if (placeBid(msg.sender, value))
-                    refund -= value;
-            }
-            // Make it impossible for the sender to re-claim
-            // the same deposit.
-            bidToCheck.blindedBid = bytes32(0);
-        }
-        msg.sender.transfer(refund);
-    }
-
-    // This is an "internal" function which means that it
-    // can only be called from the contract itself (or from
-    // derived contracts).
-    function placeBid(address bidder, uint value) internal
-            returns (bool success)
-    {
-        if (value <= highestBid) {
-            return false;
-        }
-        if (highestBidder != address(0)) {
-            // Refund the previously highest bidder.
-            pendingReturns[highestBidder] += highestBid;
-        }
-        highestBid = value;
-        highestBidder = bidder;
-        return true;
+        return true
     }
 
     /// Withdraw a bid that was overbid.
     function withdraw() public {
-        uint amount = pendingReturns[msg.sender];
+        Player _finisher = playerList[msg.sender];
+        require(effectivePlayers != 0, "the evaluate function has not been called");
+        require(_finisher.alive == true, "You either died in the game or have already withdrawn. There is nothing for you to withdraw" );
+        uint weight = groupList[_finisher.group].length;
+        uint amount = totalPot/effectivePlayers * weight;
         if (amount > 0) {
-            // It is important to set this to zero because the recipient
-            // can call this function again as part of the receiving call
-            // before `transfer` returns (see the remark above about
-            // conditions -> effects -> interaction).
-            pendingReturns[msg.sender] = 0;
+            
+            // Player dies when she withdraws her winnings
+            _finisher.alive = false;
 
             msg.sender.transfer(amount);
         }
     }
 
-    /// End the auction and send the highest bid
-    /// to the beneficiary.
-    function auctionEnd()
+    /// End the game and allow it to be evaluated
+    function gameEnd()
         public
-        onlyAfter(revealEnd)
+        onlyAfter(GameEnded)
     {
         require(!ended);
-        emit AuctionEnded(highestBidder, highestBid);
-        ended = true;
-        beneficiary.transfer(highestBid);
+        emit GameEnded(now);
+
+        // Is this safe??
+        ended = evaluate();
     }
 }
